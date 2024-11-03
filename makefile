@@ -4,8 +4,8 @@ CC = gcc
 # Define compiler flags
 CFLAGS = -Wall -g
 
-# Define linker flags for OpenSSL
-LDFLAGS = -lssl -lcrypto
+# Define linker flags (add -lcurl, -lssl, and -lcrypto for libcurl and OpenSSL)
+LDFLAGS = -lcurl -lssl -lcrypto
 
 # Define the target executable
 TARGET = dns_forwarder
