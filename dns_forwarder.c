@@ -76,7 +76,6 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
 
     char url[512];
     snprintf(url, sizeof(url), "%s/dns-query?dns=%s", doh_server_https, encoded_query);
-    printf("%s/dns-query?dns=%s", doh_server_https, encoded_query);
     free(encoded_query);
     curl = curl_easy_init();
     if (!curl) {
