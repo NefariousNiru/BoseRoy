@@ -19,9 +19,9 @@ char denylist[MAX_DENYLIST_SIZE][MAX_DOMAIN_LENGTH];
 int denylist_count = 0;
 int use_doh = 0;   
 char *denylist_file = NULL;
-char *upstream_domain = "8.8.8.8";
+char *upstream_domain_UDP = "8.8.8.8";
 char *log_file = NULL;
-char *doh_server = "https://8.8.8.8";  
+char *doh_server_https = "https://8.8.8.8";  
 
 struct response_data {
     unsigned char *data;
@@ -75,9 +75,9 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
     }
 
     char url[512];
-    snprintf(url, sizeof(url), "%s/dns-query?dns=%s", doh_server, encoded_query);
+    snprintf(url, sizeof(url), "%s/dns-query?dns=%s", doh_server_https, encoded_query);
+    printf("%s/dns-query?dns=%s", doh_server_https, encoded_query);
     free(encoded_query);
-
     curl = curl_easy_init();
     if (!curl) {
         fprintf(stderr, "Failed to initialize curl\n");
@@ -109,7 +109,7 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
 
     curl_easy_cleanup(curl);
     free(chunk.data);
-    printf("Using %s for DNS-over-Https", doh_server);
+    printf("Using %s for DNS-over-Https", doh_server_https);
     return 0;
 }
 
@@ -148,14 +148,14 @@ void send_nxdomain_response(int sock, struct sockaddr_in *client_addr, socklen_t
     sendto(sock, buffer, length, 0, (struct sockaddr *)client_addr, addr_len);
 }
 
-void forward_dns_query(int sock, char *buffer, int length, struct sockaddr_in *client_addr, socklen_t addr_len) {
+void forward_dns_query_UDP(int sock, char *buffer, int length, struct sockaddr_in *client_addr, socklen_t addr_len) {
     int resolver_sock;
     struct sockaddr_in resolver_addr;
 
     resolver_addr.sin_family = AF_INET;
     resolver_addr.sin_port = htons(53);
-    inet_pton(AF_INET, upstream_domain, &resolver_addr.sin_addr);
-    printf("Using %s as Upstream Domain Server", upstream_domain);
+    inet_pton(AF_INET, upstream_domain_UDP, &resolver_addr.sin_addr);
+    printf("Using %s as Upstream Domain Server", upstream_domain_UDP);
 
 
     if ((resolver_sock = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
@@ -164,7 +164,7 @@ void forward_dns_query(int sock, char *buffer, int length, struct sockaddr_in *c
     }
 
     sendto(resolver_sock, buffer, length, 0, (struct sockaddr *)&resolver_addr, sizeof(resolver_addr));
-    
+
     int n = recvfrom(resolver_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
     if (n < 0) {
         perror("Error receiving response from resolver");
@@ -280,7 +280,7 @@ void run_server(int sockfd) {
                         printf("DoH request failed\n");
                     }
                 } else {
-                    forward_dns_query(sockfd, buffer, n, &client_addr, addr_len);
+                    forward_dns_query_UDP(sockfd, buffer, n, &client_addr, addr_len);
                 }
             }
         } else {
@@ -291,28 +291,56 @@ void run_server(int sockfd) {
 }
 
 void print_usage(char *program_name) {
-    printf("Usage: %s [-f denylist_file] [-d dns_server] [-l log_file] [--doh] [--doh_server <url>]\n", program_name);
+    printf("Usage: %s [-f denylist_file] [-d dns_server] [-l log_file] [--doh] [--doh_server_https <url>]\n", program_name);
     printf("\nOptions:\n");
     printf("  -h, --help                   Show this help message and exit\n");
     printf("  -f DENY_LIST_FILE            File containing domains to block\n");
     printf("  -d DST_IP                    Destination DNS server IP\n");
     printf("  -l LOG_FILE                  Append-only log file\n");
-    printf("  --doh                         Use default upstream DoH server\n");
-    printf("  --doh_server DOH_SERVER       Use this upstream DoH server\n");
+    printf("  --doh                        Use default upstream DoH server\n");
+    printf("  --doh_server_https doh_server_https      Use this upstream DoH server\n");
     printf("\nRequirements:\n");
-    printf("If --doh or --doh_server are specified, the forwarder MUST forward the DNS query using the DoH protocol\n");
-    printf("If neither --doh nor --doh_server are specified (in which case -d MUST be present), the forwarder MUST forward the DNS query using the DNS protocol\n");
+    printf("If --doh or --doh_server_https are specified, the forwarder MUST forward the DNS query using the DoH protocol\n");
+    printf("If neither --doh nor --doh_server_https are specified (in which case -d MUST be present), the forwarder MUST forward the DNS query using the DNS protocol\n");
     printf("The DNS forwarder MUST receive DNS messages from the client via a simple UDP server socket.\n");
     printf("When DoH is not used, the -d option will be specified and the forwarder must use a simple UDP client socket to forward the client's query to the DNS resolver\n");
     printf("The DENY_LIST_FILE file MUST contain a (potentially empty) list of domain names that MUST be blocked by the forwarder.\n");
 }
 
+char *format_doh_server_https_url(const char *optarg) {
+    const char *prefix = "https://";
+    size_t prefix_len = strlen(prefix);
+    size_t optarg_len = strlen(optarg);
+
+    // Check if optarg starts with "https://"
+    if (strncmp(optarg, prefix, prefix_len) != 0) {
+        // Allocate memory for the full URL with "https://"
+        char *full_url = (char *)malloc(prefix_len + optarg_len + 1);
+        if (!full_url) {
+            perror("Memory allocation for DoH server URL failed");
+            exit(EXIT_FAILURE);
+        }
+        // Concatenate "https://" with optarg
+        snprintf(full_url, prefix_len + optarg_len + 1, "%s%s", prefix, optarg);
+        return full_url;
+    } else {
+        // If optarg already starts with "https://", duplicate it directly
+        char *full_url = strdup(optarg);
+        if (!full_url) {
+            perror("Memory allocation for DoH server URL failed");
+            exit(EXIT_FAILURE);
+        }
+        return full_url;
+    }
+}
+
+
 void parse_arguments(int argc, char *argv[]){
     int opt;
     static struct option long_options[] = {
-        {"help", no_argument, 0, 'h'},           // Support `--help`
-        {"doh", no_argument, &use_doh, 1},       // Sets `use_doh` to 1 if `--doh` is provided
-        {"doh_server", required_argument, 0, 's'}, // Custom DoH server
+        {"help", no_argument, 0, 'h'},
+        {"doh", no_argument, &use_doh, 1},
+        {"doh_server_https", required_argument, 0, 0},
         {0, 0, 0, 0}
     };
 
@@ -327,32 +355,31 @@ void parse_arguments(int argc, char *argv[]){
                 printf("Denylist file: %s\n", denylist_file);
                 break;
             case 'd':
-                upstream_domain = optarg;  // Use `upstream_domain` consistently
-                printf("DNS server: %s\n", upstream_domain);
+                upstream_domain_UDP = optarg;  // Use `upstream_domain_UDP` consistently
+                printf("DNS server: %s\n", upstream_domain_UDP);
                 break;
             case 'l':
                 log_file = optarg;
                 printf("Log file: %s\n", log_file);
                 break;
             case 0:
-                if (strcmp("doh_server", long_options[optind - 1].name) == 0) {
-                    const char *prefix = "https://";
-                    size_t url_length = strlen(prefix) + strlen(optarg) + 1;
-                    doh_server = (char *)malloc(url_length);
-                    if (!doh_server) {
-                        perror("Memory allocation for DoH server failed");
-                        exit(EXIT_FAILURE);
-                    }
-                    snprintf(doh_server, url_length, "%s%s", prefix, optarg);
-                    printf("DoH server: %s\n", doh_server);
+                if (strcmp("doh_server_https", long_options[optind - 1].name) == 0) {
+                    doh_server_https = format_doh_server_https_url(opt);
+                    use_doh = 1;
                 } else if (strcmp("doh", long_options[optind - 1].name) == 0) {
-                    printf("DoH enabled\n");
+                    printf("DoH enabled with default server '8.8.8.8'\n");
                 }
                 break;
             default:
                 print_usage(argv[0]);
                 exit(EXIT_FAILURE);
         }
+    }
+
+    if (!use_doh && !upstream_domain_UDP) {
+        fprintf(stderr, "Error: Either --doh/--doh_server_https or -d must be specified.\n");
+        print_usage(argv[0]);
+        exit(EXIT_FAILURE);
     }
 }
 
@@ -366,7 +393,7 @@ int main(int argc, char *argv[]) {
     printf("DNS forwarder running on port %d...\n", PORT);
     printf("Using DoH: %s\n", use_doh ? "Enabled" : "Disabled");
     if (use_doh) {
-        printf("DoH Server: %s\n", upstream_domain);
+        printf("DoH Server: %s\n", doh_server_https);
     }
 
     int sockfd = create_UDP_socket();
@@ -379,7 +406,7 @@ int main(int argc, char *argv[]) {
     }
 
     run_server(sockfd);
-    free(doh_server);
+    free(doh_server_https);
     close(sockfd);
     return 0;
 }
