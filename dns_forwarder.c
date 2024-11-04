@@ -364,7 +364,7 @@ void parse_arguments(int argc, char *argv[]){
                 break;
             case 0:
                 if (strcmp("doh_server_https", long_options[optind - 1].name) == 0) {
-                    doh_server_https = format_doh_server_https_url(opt);
+                    doh_server_https = format_doh_server_https_url(optarg);
                     use_doh = 1;
                 } else if (strcmp("doh", long_options[optind - 1].name) == 0) {
                     printf("DoH enabled with default server '8.8.8.8'\n");
