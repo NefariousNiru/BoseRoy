@@ -425,7 +425,7 @@ void parse_arguments(int argc, char *argv[]){
                 break;
             case 'd':
                 upstream_domain_UDP = optarg; 
-                upstream_dns_specified = 1;  // Use `upstream_domain_UDP` consistently
+                upstream_dns_specified = 1;
                 printf("DNS server: %s\n", upstream_domain_UDP);
                 break;
             case 'l':
