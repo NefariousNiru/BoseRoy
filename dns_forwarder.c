@@ -200,7 +200,6 @@ void forward_dns_query_UDP(int sock, char *buffer, int length, struct sockaddr_i
     // Send the resolver's response back to the client
     sendto(sock, buffer, n, 0, (struct sockaddr *)client_addr, addr_len);
 
-    // Close the resolver socket
     close(resolver_sock);
 }
 
@@ -280,10 +279,7 @@ void parse_dns_query(char *buffer, int length, char *domain, char *query_type) {
         return;
     }
 
-    // Extract the query type (2 bytes)
     uint16_t qtype = (qtype_ptr[0] << 8) | qtype_ptr[1];
-
-    // Map the query type to a human-readable string
     switch (qtype) {
         case 1:
             strcpy(query_type, "A");
@@ -311,7 +307,6 @@ void parse_dns_query(char *buffer, int length, char *domain, char *query_type) {
             break;
     }
 
-    // Print the parsed domain and query type
     printf("Requested Domain: %s, Query Type: %s\n", domain, query_type);
 }
 
@@ -391,7 +386,6 @@ char *format_doh_server_https_url(const char *optarg) {
     char *full_url;
     // Check if optarg starts with "https://"
     if (strncmp(optarg, prefix, prefix_len) != 0) {
-        // Allocate memory for the full URL with "https://"
         full_url = (char *)malloc(prefix_len + optarg_len + 1);
         if (full_url == NULL) {
             perror("Memory allocation for DoH server URL failed");
