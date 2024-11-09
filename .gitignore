@@ -2,3 +2,4 @@
 dns_forwarder
 dns_forwarder.o
 denylist
+log

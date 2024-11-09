@@ -10,6 +10,7 @@
 #include <curl/curl.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#include <signal.h>
 
 #define PORT 9999
 #define BUFFER_SIZE 2048
@@ -20,6 +21,7 @@ int denylist_count = 0;
 int use_doh = 0;   
 char *denylist_file = NULL;
 char *upstream_domain_UDP = "8.8.8.8";
+int upstream_dns_specified = 0;
 char *log_file = NULL;
 char *doh_server_https = "https://8.8.8.8";  
 
@@ -27,6 +29,18 @@ struct response_data {
     unsigned char *data;
     size_t size;
 };
+
+void log_query(const char *domain, const char *type, const char *status) {
+    if (log_file != NULL) {
+        FILE *log = fopen(log_file, "a");
+        if (log != NULL) {
+            fprintf(log, "%s %s %s\n", domain, type, status);
+            fclose(log);
+        } else {
+            perror("Failed to open log file");
+        }
+    }
+}
 
 size_t write_callback(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t realsize = size * nmemb;
@@ -61,15 +75,26 @@ char *base64url_encode(const unsigned char *input, int length) {
         else if (encoded_data[i] == '/') encoded_data[i] = '_';
     }
 
+    for (int i = encoded_length - 1; i >= 0 && encoded_data[i] == '='; i--) {
+        encoded_data[i] = '\0';
+    }
+
     encoded_data[encoded_length] = '\0';
     return encoded_data;
 }
 
 int send_doh_request(const unsigned char *dns_query, int query_len, unsigned char *response, int *response_len) {
     CURL *curl;
+    curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "Failed to initialize curl\n");
+        return -1;
+    }
+
     CURLcode res;
     char *encoded_query = base64url_encode(dns_query, query_len);
     if (encoded_query == NULL) {
+        curl_easy_cleanup(curl);
         fprintf(stderr, "Base64 URL encoding failed\n");
         return -1;
     }
@@ -77,12 +102,7 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
     char url[512];
     snprintf(url, sizeof(url), "%s/dns-query?dns=%s", doh_server_https, encoded_query);
     free(encoded_query);
-    curl = curl_easy_init();
-    if (!curl) {
-        fprintf(stderr, "Failed to initialize curl\n");
-        return -1;
-    }
-
+    
     struct response_data chunk;
     chunk.data = malloc(1); 
     chunk.size = 0;          
@@ -91,12 +111,13 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&chunk);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 5L);
+    curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_WHATEVER);
 
     res = curl_easy_perform(curl);
     if (res != CURLE_OK) {
         fprintf(stderr, "DoH request failed: %s\n", curl_easy_strerror(res));
-        curl_easy_cleanup(curl);
         free(chunk.data);
+        curl_easy_cleanup(curl);
         return -1;
     }
 
@@ -106,8 +127,8 @@ int send_doh_request(const unsigned char *dns_query, int query_len, unsigned cha
     *response_len = chunk.size;
     memcpy(response, chunk.data, chunk.size);
 
-    curl_easy_cleanup(curl);
     free(chunk.data);
+    curl_easy_cleanup(curl);
     printf("Using %s for DNS-over-Https", doh_server_https);
     return 0;
 }
@@ -162,6 +183,11 @@ void forward_dns_query_UDP(int sock, char *buffer, int length, struct sockaddr_i
         return;
     }
 
+    struct timeval timeout;
+    timeout.tv_sec = 10;
+    timeout.tv_usec = 0;
+    setsockopt(resolver_sock, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+
     sendto(resolver_sock, buffer, length, 0, (struct sockaddr *)&resolver_addr, sizeof(resolver_addr));
 
     int n = recvfrom(resolver_sock, buffer, BUFFER_SIZE, 0, NULL, NULL);
@@ -206,12 +232,13 @@ int bind_server(int sockfd, struct sockaddr_in server_addr) {
     return 0;
 }
 
-void parse_dns_query(char *buffer, int length, char *domain) {
+void parse_dns_query(char *buffer, int length, char *domain, char *query_type) {
     int header_size = 12;
 
     if (length < header_size) {
         printf("Invalid Length DNS Message\n");
         domain[0] = '\0'; 
+        query_type[0] = '\0';
         return;
     }
 
@@ -224,6 +251,7 @@ void parse_dns_query(char *buffer, int length, char *domain) {
         if (label_len < 0 || qname + label_len >= end_msg) {
             printf("\nError: Label length exceeds message bounds or is invalid\n");
             domain[0] = '\0'; 
+            query_type[0] = '\0';
             return;
         }
         qname++;  
@@ -232,6 +260,7 @@ void parse_dns_query(char *buffer, int length, char *domain) {
             if (qname >= end_msg || (!isalnum(*qname) && *qname != '-')) {
                 printf("\nError: Unexpected character in domain name\n");
                 domain[0] = '\0';
+                query_type[0] = '\0';
                 return;
             }
             *domain_ptr++ = *qname++;
@@ -243,7 +272,47 @@ void parse_dns_query(char *buffer, int length, char *domain) {
     }
 
     *domain_ptr = '\0';
-    printf("Requested Domain: %s\n", domain);
+
+    char *qtype_ptr = qname + 1;
+    if (qtype_ptr + 2 > end_msg) {
+        printf("Error: Query type field is out of bounds\n");
+        query_type[0] = '\0';
+        return;
+    }
+
+    // Extract the query type (2 bytes)
+    uint16_t qtype = (qtype_ptr[0] << 8) | qtype_ptr[1];
+
+    // Map the query type to a human-readable string
+    switch (qtype) {
+        case 1:
+            strcpy(query_type, "A");
+            break;
+        case 28:
+            strcpy(query_type, "AAAA");
+            break;
+        case 15:
+            strcpy(query_type, "MX");
+            break;
+        case 2:
+            strcpy(query_type, "NS");
+            break;
+        case 5:
+            strcpy(query_type, "CNAME");
+            break;
+        case 6:
+            strcpy(query_type, "SOA");
+            break;
+        case 12:
+            strcpy(query_type, "PTR");
+            break;
+        default:
+            strcpy(query_type, "UNKNOWN");
+            break;
+    }
+
+    // Print the parsed domain and query type
+    printf("Requested Domain: %s, Query Type: %s\n", domain, query_type);
 }
 
 void run_server(int sockfd) {
@@ -262,13 +331,16 @@ void run_server(int sockfd) {
         printf("\nDNS Query From Client: %s\n", inet_ntoa(client_addr.sin_addr));
         
         char domain[MAX_DOMAIN_LENGTH] = {0};
-        parse_dns_query(buffer, n, domain);
+        char query_type[10] = {0};
+        parse_dns_query(buffer, n, domain, query_type);
 
         if (domain[0] != '\0') {
             if (is_domain_blocked(domain)) {
                 printf("Blocked Domain: %s\n", domain);
+                log_query(domain, query_type, "DENY");
                 send_nxdomain_response(sockfd, &client_addr, addr_len, buffer, n);
             } else {
+                log_query(domain, query_type, "ALLOW");
                 printf("Forwarding Domain: %s\n", domain);
                 if (use_doh) {
                     unsigned char doh_response[BUFFER_SIZE];
@@ -307,30 +379,34 @@ void print_usage(char *program_name) {
 }
 
 char *format_doh_server_https_url(const char *optarg) {
+    if (optarg == NULL) {
+        fprintf(stderr, "Error: DoH server URL is NULL\n");
+        return NULL;
+    }
+
     const char *prefix = "https://";
     size_t prefix_len = strlen(prefix);
     size_t optarg_len = strlen(optarg);
 
+    char *full_url;
     // Check if optarg starts with "https://"
     if (strncmp(optarg, prefix, prefix_len) != 0) {
         // Allocate memory for the full URL with "https://"
-        char *full_url = (char *)malloc(prefix_len + optarg_len + 1);
-        if (!full_url) {
+        full_url = (char *)malloc(prefix_len + optarg_len + 1);
+        if (full_url == NULL) {
             perror("Memory allocation for DoH server URL failed");
-            exit(EXIT_FAILURE);
+            return NULL;
         }
-        // Concatenate "https://" with optarg
         snprintf(full_url, prefix_len + optarg_len + 1, "%s%s", prefix, optarg);
-        return full_url;
     } else {
         // If optarg already starts with "https://", duplicate it directly
-        char *full_url = strdup(optarg);
-        if (!full_url) {
+        full_url = strdup(optarg);
+        if (full_url == NULL) {
             perror("Memory allocation for DoH server URL failed");
-            exit(EXIT_FAILURE);
+            return NULL;
         }
-        return full_url;
     }
+    return full_url;
 }
 
 
@@ -339,7 +415,7 @@ void parse_arguments(int argc, char *argv[]){
     static struct option long_options[] = {
         {"help", no_argument, 0, 'h'},
         {"doh", no_argument, &use_doh, 1},
-        {"doh_server_https", required_argument, 0, 0},
+        {"doh_server_https", required_argument, 0, 's'},
         {0, 0, 0, 0}
     };
 
@@ -351,22 +427,35 @@ void parse_arguments(int argc, char *argv[]){
                 break;
             case 'f':
                 denylist_file = optarg;
-                printf("Denylist file: %s\n", denylist_file);
+                printf("Deny List Enabled with file: %s\n", denylist_file);
                 break;
             case 'd':
-                upstream_domain_UDP = optarg;  // Use `upstream_domain_UDP` consistently
+                upstream_domain_UDP = optarg; 
+                upstream_dns_specified = 1;  // Use `upstream_domain_UDP` consistently
                 printf("DNS server: %s\n", upstream_domain_UDP);
                 break;
             case 'l':
                 log_file = optarg;
-                printf("Log file: %s\n", log_file);
+                printf("Logging Enabled to log file: %s\n", log_file);
                 break;
-            case 0:
-                if (strcmp("doh_server_https", long_options[optind - 1].name) == 0) {
-                    doh_server_https = format_doh_server_https_url(optarg);
-                    use_doh = 1;
-                } else if (strcmp("doh", long_options[optind - 1].name) == 0) {
-                    printf("DoH enabled with default server '8.8.8.8'\n");
+            case 's':
+                if (optarg == NULL) {
+                    fprintf(stderr, "Error: No DoH server URL provided\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                doh_server_https = format_doh_server_https_url(optarg);
+                if (doh_server_https == NULL) {
+                    fprintf(stderr, "Failed to set DoH server URL\n");
+                    exit(EXIT_FAILURE);
+                }
+
+                use_doh = 1;
+                printf("DoH server set to: %s\n", doh_server_https);
+                break;
+            case 0: 
+                if (use_doh) {
+                    printf("DoH enabled with default server 'https://8.8.8.8'\n");
                 }
                 break;
             default:
@@ -375,8 +464,8 @@ void parse_arguments(int argc, char *argv[]){
         }
     }
 
-    if (!use_doh && !upstream_domain_UDP) {
-        fprintf(stderr, "Error: Either --doh/--doh_server_https or -d must be specified.\n");
+    if (!use_doh && !upstream_dns_specified) {
+        fprintf(stderr, "Error: Either -d <DNS server> or --doh/--doh_server_https must be specified.\n");
         print_usage(argv[0]);
         exit(EXIT_FAILURE);
     }
@@ -407,6 +496,6 @@ int main(int argc, char *argv[]) {
     run_server(sockfd);
     free(doh_server_https);
     close(sockfd);
+    curl_global_cleanup();
     return 0;
 }
-
