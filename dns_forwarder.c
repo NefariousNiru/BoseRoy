@@ -364,7 +364,7 @@ void print_usage(char *program_name) {
     printf("  -d DST_IP                    Destination DNS server IP\n");
     printf("  -l LOG_FILE                  Append-only log file\n");
     printf("  --doh                        Use default upstream DoH server\n");
-    printf("  --doh_server_https doh_server_https      Use this upstream DoH server\n");
+    printf("  --doh_server_https           Use this to specify upstream DoH server\n");
     printf("\nRequirements:\n");
     printf("If --doh or --doh_server_https are specified, the forwarder MUST forward the DNS query using the DoH protocol\n");
     printf("If neither --doh nor --doh_server_https are specified (in which case -d MUST be present), the forwarder MUST forward the DNS query using the DNS protocol\n");
