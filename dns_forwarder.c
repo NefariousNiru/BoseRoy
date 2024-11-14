@@ -12,7 +12,7 @@
 #include <openssl/evp.h>
 #include <signal.h>
 
-#define PORT 9999
+#define PORT 53
 #define BUFFER_SIZE 2048
 #define MAX_DENYLIST_SIZE 2048
 #define MAX_DOMAIN_LENGTH 255
