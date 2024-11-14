@@ -307,7 +307,7 @@ void parse_dns_query(char *buffer, int length, char *domain, char *query_type) {
             break;
     }
 
-    printf("Requested Domain: %s, Query Type: %s\n", domain, query_type);
+    printf("\nRequested Domain: %s, Query Type: %s\n", domain, query_type);
 }
 
 void run_server(int sockfd) {
@@ -323,7 +323,7 @@ void run_server(int sockfd) {
         }
 
         buffer[n] = '\0';
-        printf("\nDNS Query From Client: %s\n", inet_ntoa(client_addr.sin_addr));
+        printf("\nDNS Query from Client: %s", inet_ntoa(client_addr.sin_addr));
         
         char domain[MAX_DOMAIN_LENGTH] = {0};
         char query_type[10] = {0};
@@ -351,6 +351,7 @@ void run_server(int sockfd) {
             }
         } else {
             printf("Invalid domain in query, ignoring request.\n");
+            send_nxdomain_response(sockfd, &client_addr, addr_len, buffer, n);
         }
         printf("\n");
     }
@@ -421,7 +422,7 @@ void parse_arguments(int argc, char *argv[]){
                 break;
             case 'f':
                 denylist_file = optarg;
-                printf("Deny List Enabled with file: %s\n", denylist_file);
+                printf("Deny List enabled with file: %s\n", denylist_file);
                 break;
             case 'd':
                 upstream_domain_UDP = optarg; 
@@ -430,7 +431,7 @@ void parse_arguments(int argc, char *argv[]){
                 break;
             case 'l':
                 log_file = optarg;
-                printf("Logging Enabled to log file: %s\n", log_file);
+                printf("Logging enabled with log file: %s\n", log_file);
                 break;
             case 's':
                 if (optarg == NULL) {
@@ -483,10 +484,11 @@ int main(int argc, char *argv[]) {
     struct sockaddr_in server_addr = define_server_address();
 
     if (bind_server(sockfd, server_addr) < 0) {
-        close(sockfd);  // Close the socket if binding fails
+        close(sockfd);
         exit(EXIT_FAILURE);
     }
 
+    printf("-------------------Starting DOH-DNS-Forwarder-----------------\n");
     run_server(sockfd);
     free(doh_server_https);
     close(sockfd);
